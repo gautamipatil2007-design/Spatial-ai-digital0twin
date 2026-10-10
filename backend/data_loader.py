@@ -1,68 +1,73 @@
-
-from pathlib import Path
+import os
+import glob
 import pandas as pd
+from datetime import datetime
+from typing import Generator, Dict, Any, List
 
-# Project root is the parent of the backend folder.
-from pathlib import Path
-import pandas as pd
+DATA_DIR = os.path.join(os.path.dirname(__file__), "Data")
 
-DATA_DIR = Path(__file__).resolve().parent / "Data"
+class TelemetryDataLoader:
+    def __init__(self, data_dir: str = DATA_DIR):
+        self.data_dir = data_dir
+        self.dataset_files = sorted(glob.glob(os.path.join(self.data_dir, "*.csv")))
+        self.cached_data: List[Dict[str, Any]] = []
+        self._load_all_records()
 
+    def _load_all_records(self):
+        records = []
+        for file_path in self.dataset_files:
+            try:
+                df = pd.read_csv(file_path)
+                # Normalize column headers
+                df.columns = [col.strip().lower() for col in df.columns]
 
-def inspect_csv_files():
-    results = []
+                # Identify robot identifier or assign default
+                robot_id = os.path.basename(file_path).split(".")[0]
 
-    if not DATA_DIR.exists():
-        raise FileNotFoundError(f"Data folder not found: {DATA_DIR}")
+                for _, row in df.iterrows():
+                    record = {
+                        "robot_id": str(row.get("robot_id", robot_id)),
+                        "timestamp": row.get("timestamp", datetime.utcnow().isoformat()),
+                        "x": float(row.get("x", row.get("pos_x", 5.0))),
+                        "y": float(row.get("y", row.get("pos_y", 5.0))),
+                        "speed": float(row.get("speed", row.get("velocity", 1.2))),
+                        "battery": float(row.get("battery", row.get("soc", 95.0))),
+                        "temperature": float(row.get("temperature", row.get("temp", 36.5))),
+                        "vibration": float(row.get("vibration", row.get("vib", 0.05))),
+                        "status": str(row.get("status", "active")),
+                    }
+                    records.append(record)
+            except Exception as e:
+                print(f"Error loading {file_path}: {e}")
 
-    csv_files = sorted(DATA_DIR.glob("*.csv"))
+        # Fallback fixtures if CSV directory is empty
+        if not records:
+            for i in range(1, 4):
+                records.append({
+                    "robot_id": f"AGV-{i:02d}",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "x": float(10 * i),
+                    "y": float(8 * i),
+                    "speed": 1.5,
+                    "battery": 88.0,
+                    "temperature": 38.0,
+                    "vibration": 0.03,
+                    "status": "active"
+                })
 
-    for file_path in csv_files:
-        try:
-            df = pd.read_csv(file_path)
+        self.cached_data = records
 
-            results.append({
-                "filename": file_path.name,
-                "rows": len(df),
-                "columns": df.columns.tolist(),
-                "preview": df.head(3).fillna("").to_dict(
-                    orient="records"
-                ),
-                "status": "loaded",
-            })
+    def stream_telemetry(self) -> Generator[Dict[str, Any], None, None]:
+        """Cycles infinitely over cached telemetry to emulate live edge feeds."""
+        while True:
+            for record in self.cached_data:
+                yield {
+                    **record,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
 
-        except Exception as exc:
-            results.append({
-                "filename": file_path.name,
-                "status": f"error: {exc}",
-            })
-
-    return results
-
-
-if __name__ == "__main__":
-    for result in inspect_csv_files():
-        print(f"\nFile: {result['filename']}")
-        print(f"Status: {result['status']}")
-
-        if result["status"] == "loaded":
-            print(f"Rows: {result['rows']}")
-            print(f"Columns: {result['columns']}")
-            print("Preview:")
-            print(pd.DataFrame(result["preview"]).to_string(index=False))
-            
-from pathlib import Path
-import pandas as pd
-
-DATA_DIR = Path(__file__).resolve().parent / "Data"
-
-def load_robot_telemetry():
-    file_path = DATA_DIR / "robot_sensor_telemetry.csv"
-
-    if not file_path.exists():
-        raise FileNotFoundError(f"Dataset not found: {file_path}")
-
-    df = pd.read_csv(file_path)
-    df.columns = df.columns.str.strip()
-
-    return df.fillna("").to_dict(orient="records")
+    def get_latest_fleet_state(self) -> List[Dict[str, Any]]:
+        latest = {}
+        for rec in self.cached_data:
+            latest[rec["robot_id"]] = rec
+        return list(latest.values())
